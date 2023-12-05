@@ -128,11 +128,26 @@ parser.add_argument(
     '--model_cache_path', default=None, # './tmp/model/{dataset}/{alias}/'
 )
 
+parser.add_argument(
+    '--generate_rank', default=False, type=bool,
+)
+
+parser.add_argument(
+    '--model_path', default=None,
+)
+
 
 if __name__ == "__main__":
     args = parser.parse_args()
     engine_opt = vars(args)
-    engine = KBCEngine(engine_opt)
-    engine.episode()
-    print('Episode Done', flush=True)
-    sys.exit()
+    if (engine_opt['generate_rank']):
+        engine = KBCEngine(engine_opt)
+        engine.generate_rank_file(split='valid')
+        engine.generate_rank_file(split='test')
+        print('Finish Generating Rank Files', flush=True)
+        sys.exit()
+    else:
+        engine = KBCEngine(engine_opt)
+        engine.episode()
+        print('Episode Done', flush=True)
+        sys.exit()

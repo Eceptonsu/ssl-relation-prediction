@@ -9,6 +9,7 @@ from collections import defaultdict
 import torch
 from torch import nn
 
+from tqdm import tqdm
 
 def filtering(scores, these_queries, filters, n_rel, n_ent, 
               c_begin, chunk_size, query_type):
@@ -111,6 +112,82 @@ class KBCModel(nn.Module):
                     b_begin += batch_size
                 c_begin += chunk_size
         return ranks, predicted
+    
+    def get_ranking_obgl(self, 
+                queries: torch.Tensor,
+                filters: Dict[Tuple[int, int], List[int]],
+                batch_size: int = 1000, chunk_size: int = -1,
+                candidates='rhs'): 
+
+        if chunk_size < 0: # not chunking, score against all candidates at once
+            chunk_size = self.sizes[2] # entity ranking
+
+        formatted_ranks = torch.zeros((len(queries), 1002))
+    
+        with torch.no_grad():
+            c_begin = 0
+            pbar = tqdm(total=len(queries))
+            while c_begin < self.sizes[2]:
+                b_begin = 0
+                cands = self.get_candidates(c_begin, chunk_size, target=candidates)
+                while b_begin < len(queries):
+                    these_queries = queries[b_begin:b_begin + batch_size]
+                    q = self.get_queries(these_queries, target=candidates)
+                    scores = q @ cands # Score against all candidates
+    
+                    if filters is not None:
+                        scores = filtering(scores, these_queries, filters, 
+                                           n_rel=self.sizes[1], n_ent=self.sizes[2], 
+                                           c_begin=c_begin, chunk_size=chunk_size,
+                                           query_type=candidates)
+    
+                    # Rank computation
+                    for i, query in enumerate(these_queries):
+                        # Extracting positive head and tail
+                        pos_head, pos_tail = query[0], query[2]
+                    
+                        # Generate negative samples for head and tail
+                        neg_heads = torch.randint(0, self.sizes[2], (600,), device=scores.device)  # Generate extra to ensure 500 unique
+                        neg_tails = torch.randint(0, self.sizes[2], (600,), device=scores.device)
+                    
+                        # Filter out the positive head and tail, ensuring 500 unique negative samples
+                        neg_heads = neg_heads[neg_heads != pos_head][:500]
+                        neg_tails = neg_tails[neg_tails != pos_tail][:500]
+                    
+                        # In case filtering resulted in less than 500 samples, generate additional samples
+                        while len(neg_heads) < 500:
+                            additional_negs = torch.randint(0, self.sizes[2], (500 - len(neg_heads),), device=scores.device)
+                            neg_heads = torch.cat((neg_heads, additional_negs[additional_negs != pos_head])).unique()[:500]
+                    
+                        while len(neg_tails) < 500:
+                            additional_negs = torch.randint(0, self.sizes[2], (500 - len(neg_tails),), device=scores.device)
+                            neg_tails = torch.cat((neg_tails, additional_negs[additional_negs != pos_tail])).unique()[:500]
+                    
+                        # Compute Positive and Negative Ranks
+                        pos_head_score = scores[i, pos_head]
+                        pos_head_rank = (scores[i] >= pos_head_score).sum()
+                    
+                        pos_tail_score = scores[i, pos_tail]
+                        pos_tail_rank = (scores[i] >= pos_tail_score).sum()
+                    
+                        neg_heads_scores = scores[i, neg_heads]
+                        neg_tails_scores = scores[i, neg_tails]
+                    
+                        neg_heads_ranks = (neg_heads_scores.unsqueeze(1) <= scores[i].unsqueeze(0)).sum(dim=1)
+                        neg_tails_ranks = (neg_tails_scores.unsqueeze(1) <= scores[i].unsqueeze(0)).sum(dim=1)
+                        
+                        pos_head_rank_tensor = torch.tensor([pos_head_rank], device=scores.device)
+                        pos_tail_rank_tensor = torch.tensor([pos_tail_rank], device=scores.device)
+                        
+                        # Now concatenate
+                        combined_ranks = torch.cat([pos_head_rank_tensor, neg_heads_ranks, pos_tail_rank_tensor, neg_tails_ranks])
+                        formatted_ranks[b_begin + i] = combined_ranks
+                    
+                    b_begin += batch_size
+                    pbar.update(len(these_queries))
+                c_begin += chunk_size
+            pbar.close()
+        return formatted_ranks
 
     def get_metric_ogb(self, 
                        queries: torch.Tensor,

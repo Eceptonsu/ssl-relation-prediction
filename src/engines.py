@@ -4,7 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
-
+import numpy as np
 
 import torch
 from torch import nn
@@ -104,6 +104,7 @@ class KBCEngine(object):
         self.w_lhs = opt['w_lhs']
         self.opt = opt
         self._epoch_id = 0
+        self.model_path = opt['model_path']
 
         wandb.init(project="ssl-relation-prediction", 
                     group=opt['experiment_id'], 
@@ -218,4 +219,37 @@ class KBCEngine(object):
         self.model.eval()
         mrrs, hits, _ = self.dataset.eval(self.model, 'test', -1)
         print("\n\nTEST : MRR {} Hits {}".format(mrrs, hits))
+        wandb.run.summary['is_done'] = True
+        
+    def generate_rank_file(self, split='valid'):
+        """
+        Generate and save rank files for the specified dataset split.
+        :param split: Dataset split to use, either 'valid' or 'test'.
+        """
+        # Load the trained model
+        self.model.load_state_dict(torch.load(self.model_path))
+        self.model.eval()
+
+        # Get the sampler for the specified split
+        sampler = self.dataset.get_sampler(split)
+        filters = self.dataset.to_skip if hasattr(self.dataset, 'to_skip') else None
+
+        all_ranks = []
+        while not sampler.is_empty():
+            batch_data = sampler.batchify(self.batch_size, self.device)
+            batch_ranks = self.model.get_ranking_obgl(batch_data, filters)
+            
+            # Append the batch ranks to the all_ranks list
+            if batch_ranks.dim() == 1:
+                batch_ranks = batch_ranks.unsqueeze(1)
+            assert batch_ranks.size(1) == 1002, "Rank array for a batch does not have the correct shape."
+            all_ranks.append(batch_ranks.cpu().numpy())
+
+        # Concatenate all ranks and ensure the shape is as expected
+        ranks_array = np.concatenate(all_ranks, axis=0)
+        assert ranks_array.shape[1] == 1002, "Rank array shape is incorrect."
+
+        rank_file_path = f'./{split}_ranks.npy'
+        np.save(rank_file_path, ranks_array)
+        print(f'Rank file for {split} dataset saved at {rank_file_path} with shape {ranks_array.shape}.')
         wandb.run.summary['is_done'] = True

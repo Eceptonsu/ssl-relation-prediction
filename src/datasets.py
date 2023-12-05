@@ -185,23 +185,24 @@ class Dataset(object):
         return self.data[split].astype('int64')
 
     def get_split(self, split='train', reciprocal=True):
-        """ processed split with reciprocal & unified vocabuary
-
-        Args:
-            reciprocal: bool, whether to include reciprocal triples
-        """
+        """ processed split with reciprocal & unified vocabulary """
         data = self.data[split]
-        if self.reciprocal:
-            assert split != 'test'
+        if self.reciprocal and split != 'test':
             data = invert(data, self.n_predicates // 2, stack=True, 
                           include_type=self.include_type)
         return data.astype('int64')
 
     def get_sampler(self, split):
-        examples = {'train': self.examples_train,
-                    'valid': self.examples_valid}[split]
-        sampler = Sampler(examples, 
-                          self.n_entities)
+        if split == 'train':
+            examples = self.examples_train
+        elif split == 'valid':
+            examples = self.examples_valid
+        elif split == 'test':
+            examples = torch.from_numpy(self.get_split(split='test')).to(self.device)
+        else:
+            raise ValueError("Invalid split. Choose 'train', 'valid', or 'test'.")
+        
+        sampler = Sampler(examples, self.n_entities)
         return sampler
 
     def eval(self,
